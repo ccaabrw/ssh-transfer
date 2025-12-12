@@ -1,6 +1,6 @@
 # ssh_copy
 
-A Python script to securely transfer files using SFTP with automatic verification and cleanup.
+A Perl script to securely transfer files using SFTP with automatic verification and cleanup.
 
 ## Features
 
@@ -15,8 +15,8 @@ A Python script to securely transfer files using SFTP with automatic verificatio
 
 ## Requirements
 
-- Python 3.6 or higher
-- paramiko library
+- Perl 5.10 or higher
+- Net::SFTP::Foreign module
 
 ## Installation
 
@@ -26,9 +26,21 @@ git clone https://github.com/ccaabrw/ssh_copy.git
 cd ssh_copy
 ```
 
-2. Install the required dependencies:
+2. Install the required Perl module:
+
+**Using CPAN:**
 ```bash
-pip install -r requirements.txt
+cpan Net::SFTP::Foreign
+```
+
+**On Debian/Ubuntu:**
+```bash
+sudo apt-get install libnet-sftp-foreign-perl
+```
+
+**On RedHat/CentOS/Fedora:**
+```bash
+sudo yum install perl-Net-SFTP-Foreign
 ```
 
 ## Usage
@@ -37,52 +49,52 @@ pip install -r requirements.txt
 
 Transfer a file using password authentication:
 ```bash
-python sftp_transfer.py -H server.example.com -u username -p password /path/to/local/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -p password /path/to/local/file.txt /remote/path/file.txt
 ```
 
 Transfer a file using SSH key authentication:
 ```bash
-python sftp_transfer.py -H server.example.com -u username -k ~/.ssh/id_rsa /path/to/local/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa /path/to/local/file.txt /remote/path/file.txt
 ```
 
 ### Command Line Arguments
 
 ```
-positional arguments:
-  local_file            Path to the local file to transfer
-  remote_file           Destination path on the remote server
+Usage:
+    sftp_transfer.pl [options] <local_file> <remote_file>
 
-required arguments:
-  -H HOST, --host HOST          Remote server hostname or IP
-  -u USERNAME, --username USERNAME
-                                Username for authentication
+Required Arguments:
+    local_file                    Path to the local file to transfer
+    remote_file                   Destination path on the remote server
+    -H, --host <hostname>         Remote server hostname or IP
+    -u, --username <username>     Username for authentication
 
-optional arguments:
-  -h, --help                    Show this help message and exit
-  -P PORT, --port PORT          SSH/SFTP port (default: 22)
-  -p PASSWORD, --password PASSWORD
-                                Password for authentication
-  -k KEY_FILE, --key-file KEY_FILE
-                                Path to SSH private key file
-  --no-remove                   Do not remove source file after transfer (for testing)
-  -v, --verbose                 Enable verbose logging
+Authentication (one required):
+    -p, --password <password>     Password for authentication
+    -k, --key-file <path>         Path to SSH private key file
+
+Optional Arguments:
+    -h, --help                    Show this help message and exit
+    -P, --port <port>             SSH/SFTP port (default: 22)
+    --no-remove                   Do not remove source file after transfer (for testing)
+    -v, --verbose                 Enable verbose logging
 ```
 
 ### Examples
 
 #### Example 1: Transfer to a custom port
 ```bash
-python sftp_transfer.py -H server.example.com -P 2222 -u username -p password /path/to/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -P 2222 -u username -p password /path/to/file.txt /remote/path/file.txt
 ```
 
 #### Example 2: Test without removing source file
 ```bash
-python sftp_transfer.py -H server.example.com -u username -k ~/.ssh/id_rsa --no-remove /path/to/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa --no-remove /path/to/file.txt /remote/path/file.txt
 ```
 
 #### Example 3: Verbose logging
 ```bash
-python sftp_transfer.py -H server.example.com -u username -p password -v /path/to/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -p password -v /path/to/file.txt /remote/path/file.txt
 ```
 
 ## How It Works
@@ -99,7 +111,7 @@ The script performs the following steps:
 
 ## Security Considerations
 
-- The script uses `paramiko.AutoAddPolicy()` for host key verification. In production environments, you should implement proper host key verification.
+- The script uses `StrictHostKeyChecking=no` for host key verification. In production environments, you should implement proper host key verification.
 - Passwords provided on the command line may be visible in process listings. Using SSH key authentication is recommended.
 - The script only removes the source file after successful verification to prevent data loss.
 
