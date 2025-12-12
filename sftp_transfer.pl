@@ -180,6 +180,9 @@ sub connect_sftp {
     }
     
     # Additional options for better compatibility
+    # WARNING: StrictHostKeyChecking=no disables host key verification
+    # This makes the connection vulnerable to man-in-the-middle attacks
+    # In production, you should properly manage known_hosts or use custom verification
     $sftp_opts{more} = ['-o', 'StrictHostKeyChecking=no'];
     
     my $sftp = Net::SFTP::Foreign->new(%sftp_opts);
@@ -202,7 +205,7 @@ sub transfer_file {
     
     # Create remote directory if needed
     my $remote_dir = dirname($remote);
-    if ($remote_dir && $remote_dir ne '.' && $remote_dir ne '/') {
+    if ($remote_dir && $remote_dir ne '' && $remote_dir ne '.' && $remote_dir ne '/') {
         log_debug("Ensuring remote directory exists: $remote_dir");
         $sftp->mkpath($remote_dir);
         if ($sftp->error) {
@@ -243,6 +246,9 @@ sub verify_transfer {
     log_info("Remote file size: $remote_size bytes");
     
     # Compare sizes
+    # Note: File size comparison alone may not detect all corruption cases
+    # (e.g., bit flips that don't change size). For critical transfers,
+    # consider adding checksum verification (MD5/SHA256) as an additional step.
     if ($local_size != $remote_size) {
         log_error("File sizes do not match!");
         return 0;
