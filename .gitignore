@@ -9,6 +9,10 @@ _build/
 *.swo
 *~
 
+# Python (legacy)
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 Thumbs.db
