@@ -1,0 +1,27 @@
+# Perl
+*.bak
+Makefile.old
+pm_to_blib
+blib/
+MYMETA.*
+_build/
+*.swp
+*.swo
+*~
+
+# Python (legacy)
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Temporary files
+/tmp/
+*.tmp
+*.log
