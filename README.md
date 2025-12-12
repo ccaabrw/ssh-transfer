@@ -1,4 +1,4 @@
-# ssh_copy
+# ssh-transfer
 
 A Perl script to securely transfer files using SFTP with automatic verification and cleanup.
 
@@ -22,8 +22,8 @@ A Perl script to securely transfer files using SFTP with automatic verification 
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/ccaabrw/ssh_copy.git
-cd ssh_copy
+git clone https://github.com/ccaabrw/ssh-transfer.git
+cd ssh-transfer
 ```
 
 2. Install the required Perl module:
