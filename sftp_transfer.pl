@@ -318,7 +318,7 @@ __END__
 
 =head1 AUTHOR
 
-Created for the ssh_copy project
+Created for the ssh-transfer project
 
 =head1 LICENSE
 
