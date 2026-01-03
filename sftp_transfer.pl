@@ -295,26 +295,9 @@ sub calculate_remote_checksum {
         return undef;
     }
     
-    # Execute command via SSH
-    my $output = $sftp->system($cmd);
-    
-    if ($sftp->error) {
-        log_error("Failed to calculate remote checksum: " . $sftp->error);
-        return undef;
-    }
-    
-    # Read the output
-    my $checksum;
-    if (defined $output) {
-        $checksum = $output;
-        $checksum =~ s/^\s+|\s+$//g;  # Trim whitespace
-    }
-    
-    # The system() method doesn't return command output directly in Net::SFTP::Foreign
-    # We need to use a different approach - download a small chunk or use a temp file
-    # Let's use a more reliable method with backtick-style capture
-    
     # Create a temporary file to capture output
+    # Note: Using /tmp/ which is standard on Unix/Linux systems
+    # This script targets SFTP/SSH environments which are Unix-based
     my $temp_remote = "/tmp/.sftp_checksum_$$";
     my $temp_local = "/tmp/.sftp_checksum_local_$$";
     
@@ -353,8 +336,16 @@ sub calculate_remote_checksum {
     # Clean up remote temp file
     $sftp->system("rm -f $temp_remote");
     
-    unless ($checksum && $checksum =~ /^[a-f0-9]+$/i) {
-        log_error("Invalid checksum format received: " . ($checksum || 'empty'));
+    # Validate checksum format and length based on algorithm
+    my %expected_lengths = (
+        'md5'    => 32,
+        'sha1'   => 40,
+        'sha256' => 64,
+    );
+    
+    my $expected_length = $expected_lengths{$algorithm};
+    unless ($checksum && $checksum =~ /^[a-f0-9]+$/i && length($checksum) == $expected_length) {
+        log_error("Invalid checksum format received: " . ($checksum || 'empty') . " (expected $expected_length hex characters)");
         return undef;
     }
     
