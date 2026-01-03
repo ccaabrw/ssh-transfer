@@ -52,6 +52,7 @@ use Getopt::Long qw(:config no_ignore_case);
 use Pod::Usage;
 use File::Basename;
 use File::Spec;
+use File::Path qw(make_path);
 use Digest::MD5;
 use Digest::SHA;
 
@@ -317,11 +318,21 @@ sub download_file {
     
     # Create local directory if needed
     my $local_dir = dirname($local);
-    if ($local_dir && $local_dir ne '' && $local_dir ne '.') {
+    if ($local_dir && $local_dir ne '' && $local_dir ne '.' && $local_dir ne '/') {
         log_debug("Ensuring local directory exists: $local_dir");
         unless (-d $local_dir) {
-            unless (mkdir($local_dir, 0755)) {
-                log_error("Failed to create local directory: $!");
+            eval {
+                make_path($local_dir, { mode => 0755, error => \my $err });
+                if (@$err) {
+                    for my $diag (@$err) {
+                        my ($file, $message) = %$diag;
+                        log_error("Failed to create directory $file: $message");
+                    }
+                    return 0;
+                }
+            };
+            if ($@) {
+                log_error("Failed to create local directory: $@");
                 return 0;
             }
         }
