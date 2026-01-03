@@ -1,0 +1,12 @@
+# Default behavior for text files - must come first
+* text=auto
+
+# Ensure Perl scripts always use Unix (LF) line endings
+*.pl text eol=lf
+*.pm text eol=lf
+
+# Ensure shell scripts use Unix (LF) line endings
+*.sh text eol=lf
+
+# Markdown files should use LF
+*.md text eol=lf
