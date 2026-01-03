@@ -15,14 +15,15 @@ sftp_transfer.pl - Transfer files via SFTP with verification and cleanup
         -k, --key-file <path>       Path to SSH private key file
         -P, --port <port>           SSH/SFTP port (default: 22)
         --no-remove                 Do not remove source file after transfer
+        -c, --checksum <algorithm>  Enable checksum verification (md5, sha1, sha256)
         -v, --verbose               Enable verbose logging
         -h, --help                  Show this help message
 
 =head1 DESCRIPTION
 
 This script transfers a file to a remote server using SFTP, verifies the
-transfer was successful by comparing file sizes, and removes the source
-file after successful verification.
+transfer was successful by comparing file sizes and optionally checksums,
+and removes the source file after successful verification.
 
 =head1 EXAMPLES
 
@@ -35,6 +36,9 @@ file after successful verification.
     # Transfer to a different port
     sftp_transfer.pl -H server.example.com -P 2222 -u username -p password /path/to/file.txt /remote/path/file.txt
 
+    # Transfer with SHA256 checksum verification
+    sftp_transfer.pl -H server.example.com -u username -p password -c sha256 /path/to/file.txt /remote/path/file.txt
+
 =cut
 
 use strict;
@@ -43,6 +47,8 @@ use Getopt::Long qw(:config no_ignore_case);
 use Pod::Usage;
 use File::Basename;
 use File::Spec;
+use Digest::MD5;
+use Digest::SHA;
 
 # Check for required modules
 BEGIN {
@@ -67,6 +73,7 @@ my %opts = (
     help => 0,
     'no-remove' => 0,
     verbose => 0,
+    checksum => undef,
 );
 
 GetOptions(
@@ -76,6 +83,7 @@ GetOptions(
     'k|key-file=s'  => \$opts{key_file},
     'P|port=i'      => \$opts{port},
     'no-remove'     => \$opts{'no-remove'},
+    'c|checksum=s'  => \$opts{checksum},
     'v|verbose'     => \$opts{verbose},
     'h|help'        => \$opts{help},
 ) or pod2usage(2);
@@ -108,6 +116,16 @@ unless (defined $opts{username}) {
 unless (defined $opts{password} || defined $opts{key_file}) {
     log_error("Either --password or --key-file must be provided");
     exit 1;
+}
+
+# Validate checksum algorithm if provided
+if (defined $opts{checksum}) {
+    unless ($opts{checksum} =~ /^(md5|sha1|sha256)$/i) {
+        log_error("Invalid checksum algorithm: $opts{checksum}. Must be one of: md5, sha1, sha256");
+        exit 1;
+    }
+    $opts{checksum} = lc($opts{checksum});
+    log_info("Checksum verification enabled: $opts{checksum}");
 }
 
 # Validate local file exists
@@ -226,6 +244,124 @@ sub transfer_file {
     return 1;
 }
 
+sub calculate_local_checksum {
+    my ($file, $algorithm) = @_;
+    
+    log_debug("Calculating $algorithm checksum for local file: $file");
+    
+    open(my $fh, '<', $file) or do {
+        log_error("Cannot open file for checksum: $!");
+        return undef;
+    };
+    binmode($fh);
+    
+    my $digest;
+    if ($algorithm eq 'md5') {
+        $digest = Digest::MD5->new;
+    } elsif ($algorithm eq 'sha1') {
+        $digest = Digest::SHA->new(1);
+    } elsif ($algorithm eq 'sha256') {
+        $digest = Digest::SHA->new(256);
+    } else {
+        log_error("Unsupported checksum algorithm: $algorithm");
+        close($fh);
+        return undef;
+    }
+    
+    $digest->addfile($fh);
+    close($fh);
+    
+    my $checksum = $digest->hexdigest;
+    log_debug("Local $algorithm checksum: $checksum");
+    return $checksum;
+}
+
+sub calculate_remote_checksum {
+    my ($sftp, $remote_file, $algorithm) = @_;
+    
+    log_debug("Calculating $algorithm checksum for remote file: $remote_file");
+    
+    # Map algorithm to the appropriate command
+    my $cmd;
+    if ($algorithm eq 'md5') {
+        # Try different MD5 commands (md5sum on Linux, md5 on macOS/BSD)
+        $cmd = "(md5sum '$remote_file' 2>/dev/null || md5 -r '$remote_file' 2>/dev/null) | awk '{print \$1}'";
+    } elsif ($algorithm eq 'sha1') {
+        $cmd = "(sha1sum '$remote_file' 2>/dev/null || shasum -a 1 '$remote_file' 2>/dev/null) | awk '{print \$1}'";
+    } elsif ($algorithm eq 'sha256') {
+        $cmd = "(sha256sum '$remote_file' 2>/dev/null || shasum -a 256 '$remote_file' 2>/dev/null) | awk '{print \$1}'";
+    } else {
+        log_error("Unsupported checksum algorithm: $algorithm");
+        return undef;
+    }
+    
+    # Execute command via SSH
+    my $output = $sftp->system($cmd);
+    
+    if ($sftp->error) {
+        log_error("Failed to calculate remote checksum: " . $sftp->error);
+        return undef;
+    }
+    
+    # Read the output
+    my $checksum;
+    if (defined $output) {
+        $checksum = $output;
+        $checksum =~ s/^\s+|\s+$//g;  # Trim whitespace
+    }
+    
+    # The system() method doesn't return command output directly in Net::SFTP::Foreign
+    # We need to use a different approach - download a small chunk or use a temp file
+    # Let's use a more reliable method with backtick-style capture
+    
+    # Create a temporary file to capture output
+    my $temp_remote = "/tmp/.sftp_checksum_$$";
+    my $temp_local = "/tmp/.sftp_checksum_local_$$";
+    
+    # Execute command and redirect output to temp file
+    $sftp->system("$cmd > $temp_remote 2>&1");
+    
+    if ($sftp->error) {
+        log_error("Failed to execute remote checksum command: " . $sftp->error);
+        return undef;
+    }
+    
+    # Download the temp file
+    $sftp->get($temp_remote, $temp_local);
+    
+    if ($sftp->error) {
+        log_error("Failed to retrieve checksum result: " . $sftp->error);
+        # Clean up remote temp file
+        $sftp->system("rm -f $temp_remote");
+        return undef;
+    }
+    
+    # Read the checksum from local temp file
+    if (open(my $fh, '<', $temp_local)) {
+        $checksum = <$fh>;
+        close($fh);
+        if (defined $checksum) {
+            $checksum =~ s/^\s+|\s+$//g;  # Trim whitespace
+        }
+        unlink($temp_local);
+    } else {
+        log_error("Failed to read checksum result: $!");
+        $sftp->system("rm -f $temp_remote");
+        return undef;
+    }
+    
+    # Clean up remote temp file
+    $sftp->system("rm -f $temp_remote");
+    
+    unless ($checksum && $checksum =~ /^[a-f0-9]+$/i) {
+        log_error("Invalid checksum format received: " . ($checksum || 'empty'));
+        return undef;
+    }
+    
+    log_debug("Remote $algorithm checksum: $checksum");
+    return lc($checksum);
+}
+
 sub verify_transfer {
     my ($sftp, $local, $remote) = @_;
     
@@ -246,12 +382,38 @@ sub verify_transfer {
     log_info("Remote file size: $remote_size bytes");
     
     # Compare sizes
-    # Note: File size comparison alone may not detect all corruption cases
-    # (e.g., bit flips that don't change size). For critical transfers,
-    # consider adding checksum verification (MD5/SHA256) as an additional step.
     if ($local_size != $remote_size) {
         log_error("File sizes do not match!");
         return 0;
+    }
+    
+    log_success("File size verification passed");
+    
+    # Perform checksum verification if requested
+    if (defined $opts{checksum}) {
+        log_info("Performing checksum verification using $opts{checksum}...");
+        
+        my $local_checksum = calculate_local_checksum($local, $opts{checksum});
+        unless (defined $local_checksum) {
+            log_error("Failed to calculate local checksum");
+            return 0;
+        }
+        
+        my $remote_checksum = calculate_remote_checksum($sftp, $remote, $opts{checksum});
+        unless (defined $remote_checksum) {
+            log_error("Failed to calculate remote checksum");
+            return 0;
+        }
+        
+        log_info("Local checksum:  $local_checksum");
+        log_info("Remote checksum: $remote_checksum");
+        
+        if ($local_checksum ne $remote_checksum) {
+            log_error("Checksum verification failed! Files do not match.");
+            return 0;
+        }
+        
+        log_success("Checksum verification passed");
     }
     
     log_success("File transfer verified successfully");
