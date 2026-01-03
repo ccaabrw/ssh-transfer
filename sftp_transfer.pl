@@ -321,6 +321,7 @@ sub download_file {
     if ($local_dir && $local_dir ne '' && $local_dir ne '.' && $local_dir ne '/') {
         log_debug("Ensuring local directory exists: $local_dir");
         unless (-d $local_dir) {
+            my $dir_created = 0;
             eval {
                 make_path($local_dir, { mode => 0755, error => \my $err });
                 if (@$err) {
@@ -328,11 +329,15 @@ sub download_file {
                         my ($file, $message) = %$diag;
                         log_error("Failed to create directory $file: $message");
                     }
-                    return 0;
+                } else {
+                    $dir_created = 1;
                 }
             };
             if ($@) {
                 log_error("Failed to create local directory: $@");
+                return 0;
+            }
+            unless ($dir_created) {
                 return 0;
             }
         }
