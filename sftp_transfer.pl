@@ -6,7 +6,7 @@ sftp_transfer.pl - Transfer files via SFTP with verification and cleanup
 
 =head1 SYNOPSIS
 
-    sftp_transfer.pl [options] <local_file> <remote_file>
+    sftp_transfer.pl [options] <source_file> <destination_file>
 
     Options:
         -H, --host <hostname>       Remote server hostname or IP (required)
@@ -14,6 +14,7 @@ sftp_transfer.pl - Transfer files via SFTP with verification and cleanup
         -p, --password <password>   Password for authentication
         -k, --key-file <path>       Path to SSH private key file
         -P, --port <port>           SSH/SFTP port (default: 22)
+        -d, --download              Download mode: transfer from remote to local (default: upload)
         --no-remove                 Do not remove source file after transfer
         -c, --checksum <algorithm>  Enable checksum verification (md5, sha1, sha256)
         -v, --verbose               Enable verbose logging
@@ -21,22 +22,26 @@ sftp_transfer.pl - Transfer files via SFTP with verification and cleanup
 
 =head1 DESCRIPTION
 
-This script transfers a file to a remote server using SFTP, verifies the
-transfer was successful by comparing file sizes and optionally checksums,
-and removes the source file after successful verification.
+This script transfers files between local and remote servers using SFTP.
+It can upload files to a remote server or download files from a remote server.
+The transfer is verified by comparing file sizes and optionally checksums,
+and the source file is removed after successful verification.
 
 =head1 EXAMPLES
 
-    # Transfer using password authentication
+    # Upload using password authentication
     sftp_transfer.pl -H server.example.com -u username -p password /path/to/file.txt /remote/path/file.txt
 
-    # Transfer using SSH key
+    # Upload using SSH key
     sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa /path/to/file.txt /remote/path/file.txt
 
-    # Transfer to a different port
-    sftp_transfer.pl -H server.example.com -P 2222 -u username -p password /path/to/file.txt /remote/path/file.txt
+    # Download from remote server
+    sftp_transfer.pl -H server.example.com -u username -p password -d /remote/path/file.txt /path/to/local/file.txt
 
-    # Transfer with SHA256 checksum verification
+    # Download to a different port
+    sftp_transfer.pl -H server.example.com -P 2222 -u username -p password -d /remote/path/file.txt /local/file.txt
+
+    # Upload with SHA256 checksum verification
     sftp_transfer.pl -H server.example.com -u username -p password -c sha256 /path/to/file.txt /remote/path/file.txt
 
 =cut
@@ -71,6 +76,7 @@ my $verbose = 0;
 my %opts = (
     port => 22,
     help => 0,
+    download => 0,
     'no-remove' => 0,
     verbose => 0,
     checksum => undef,
@@ -82,6 +88,7 @@ GetOptions(
     'p|password=s'  => \$opts{password},
     'k|key-file=s'  => \$opts{key_file},
     'P|port=i'      => \$opts{port},
+    'd|download'    => \$opts{download},
     'no-remove'     => \$opts{'no-remove'},
     'c|checksum=s'  => \$opts{checksum},
     'v|verbose'     => \$opts{verbose},
@@ -95,11 +102,11 @@ pod2usage(-verbose => 2, -exitval => 0) if $opts{help};
 $verbose = $opts{verbose};
 
 # Validate required arguments
-my $local_file = shift @ARGV;
-my $remote_file = shift @ARGV;
+my $source_file = shift @ARGV;
+my $dest_file = shift @ARGV;
 
-unless (defined $local_file && defined $remote_file) {
-    print STDERR "Error: Both local_file and remote_file arguments are required\n\n";
+unless (defined $source_file && defined $dest_file) {
+    print STDERR "Error: Both source_file and destination_file arguments are required\n\n";
     pod2usage(2);
 }
 
@@ -128,10 +135,16 @@ if (defined $opts{checksum}) {
     log_info("Checksum verification enabled: $opts{checksum}");
 }
 
-# Validate local file exists
-unless (-f $local_file) {
-    log_error("Local file not found: $local_file");
-    exit 1;
+# Validate source file exists based on mode
+if ($opts{download}) {
+    # In download mode, we'll check remote file existence after connecting
+    log_debug("Download mode: will verify remote file exists after connection");
+} else {
+    # In upload mode, check local file exists
+    unless (-f $source_file) {
+        log_error("Local file not found: $source_file");
+        exit 1;
+    }
 }
 
 # Main execution
@@ -147,28 +160,74 @@ sub main {
             return 1;
         }
         
-        # Step 2: Transfer the file
-        log_info("Transferring $local_file to $remote_file");
-        unless (transfer_file($sftp, $local_file, $remote_file)) {
-            log_error("File transfer failed");
-            return 1;
-        }
+        my ($local_file, $remote_file);
         
-        # Step 3: Verify the transfer
-        log_info("Verifying file transfer...");
-        unless (verify_transfer($sftp, $local_file, $remote_file)) {
-            log_error("File transfer verification failed");
-            return 1;
-        }
-        
-        # Step 4: Remove source file (unless --no-remove flag is set)
-        unless ($opts{'no-remove'}) {
-            unless (remove_source_file($local_file)) {
-                log_error("Failed to remove source file");
+        if ($opts{download}) {
+            # Download mode: remote -> local
+            $remote_file = $source_file;
+            $local_file = $dest_file;
+            log_info("Download mode: $remote_file -> $local_file");
+            
+            # Verify remote file exists
+            my $remote_attrs = $sftp->stat($remote_file);
+            unless ($remote_attrs) {
+                log_error("Remote file not found: $remote_file");
+                log_error("SFTP error: " . $sftp->error) if $sftp->error;
                 return 1;
             }
+            
+            # Step 2: Download the file
+            log_info("Downloading $remote_file to $local_file");
+            unless (download_file($sftp, $remote_file, $local_file)) {
+                log_error("File download failed");
+                return 1;
+            }
+            
+            # Step 3: Verify the transfer
+            log_info("Verifying file download...");
+            unless (verify_transfer($sftp, $local_file, $remote_file)) {
+                log_error("File download verification failed");
+                return 1;
+            }
+            
+            # Step 4: Remove remote source file (unless --no-remove flag is set)
+            unless ($opts{'no-remove'}) {
+                unless (remove_remote_file($sftp, $remote_file)) {
+                    log_error("Failed to remove remote source file");
+                    return 1;
+                }
+            } else {
+                log_info("Skipping remote file removal (--no-remove flag set)");
+            }
         } else {
-            log_info("Skipping source file removal (--no-remove flag set)");
+            # Upload mode: local -> remote
+            $local_file = $source_file;
+            $remote_file = $dest_file;
+            log_info("Upload mode: $local_file -> $remote_file");
+            
+            # Step 2: Transfer the file
+            log_info("Transferring $local_file to $remote_file");
+            unless (transfer_file($sftp, $local_file, $remote_file)) {
+                log_error("File transfer failed");
+                return 1;
+            }
+            
+            # Step 3: Verify the transfer
+            log_info("Verifying file transfer...");
+            unless (verify_transfer($sftp, $local_file, $remote_file)) {
+                log_error("File transfer verification failed");
+                return 1;
+            }
+            
+            # Step 4: Remove local source file (unless --no-remove flag is set)
+            unless ($opts{'no-remove'}) {
+                unless (remove_source_file($local_file)) {
+                    log_error("Failed to remove source file");
+                    return 1;
+                }
+            } else {
+                log_info("Skipping source file removal (--no-remove flag set)");
+            }
         }
         
         log_success("All operations completed successfully");
@@ -241,6 +300,42 @@ sub transfer_file {
     }
     
     log_info("File transfer completed");
+    return 1;
+}
+
+sub download_file {
+    my ($sftp, $remote, $local) = @_;
+    
+    # Get remote file size
+    my $remote_attrs = $sftp->stat($remote);
+    unless ($remote_attrs) {
+        log_error("Cannot stat remote file: " . $sftp->error);
+        return 0;
+    }
+    my $remote_size = $remote_attrs->{size};
+    log_info("File size: $remote_size bytes");
+    
+    # Create local directory if needed
+    my $local_dir = dirname($local);
+    if ($local_dir && $local_dir ne '' && $local_dir ne '.') {
+        log_debug("Ensuring local directory exists: $local_dir");
+        unless (-d $local_dir) {
+            unless (mkdir($local_dir, 0755)) {
+                log_error("Failed to create local directory: $!");
+                return 0;
+            }
+        }
+    }
+    
+    # Download the file
+    $sftp->get($remote, $local);
+    
+    if ($sftp->error) {
+        log_error("Download failed: " . $sftp->error);
+        return 0;
+    }
+    
+    log_info("File download completed");
     return 1;
 }
 
@@ -424,6 +519,22 @@ sub remove_source_file {
         log_error("Failed to remove source file: $!");
         return 0;
     }
+}
+
+sub remove_remote_file {
+    my ($sftp, $file) = @_;
+    
+    log_info("Removing remote file: $file");
+    
+    $sftp->remove($file);
+    
+    if ($sftp->error) {
+        log_error("Failed to remove remote file: " . $sftp->error);
+        return 0;
+    }
+    
+    log_success("Remote file removed successfully");
+    return 1;
 }
 
 # Logging functions

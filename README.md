@@ -4,7 +4,9 @@ A Perl script to securely transfer files using SFTP with automatic verification 
 
 ## Features
 
-- **SFTP Transfer**: Securely transfers files to remote servers using SSH/SFTP protocol
+- **SFTP Transfer**: Securely transfers files to and from remote servers using SSH/SFTP protocol
+  - Upload files from local to remote server
+  - Download files from remote to local machine
 - **Transfer Verification**: Automatically verifies that the file was successfully transferred by checking:
   - Remote file existence
   - File size match between local and remote files
@@ -48,9 +50,14 @@ sudo yum install perl-Net-SFTP-Foreign
 
 ### Basic Usage
 
-Transfer a file using password authentication:
+Transfer a file to remote server using password authentication:
 ```bash
 perl sftp_transfer.pl -H server.example.com -u username -p password /path/to/local/file.txt /remote/path/file.txt
+```
+
+Download a file from remote server using password authentication:
+```bash
+perl sftp_transfer.pl -H server.example.com -u username -p password -d /remote/path/file.txt /path/to/local/file.txt
 ```
 
 Transfer a file using SSH key authentication:
@@ -62,11 +69,11 @@ perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa /path/t
 
 ```
 Usage:
-    sftp_transfer.pl [options] <local_file> <remote_file>
+    sftp_transfer.pl [options] <source_file> <destination_file>
 
 Required Arguments:
-    local_file                    Path to the local file to transfer
-    remote_file                   Destination path on the remote server
+    source_file                   Source file path (local for upload, remote for download)
+    destination_file              Destination file path (remote for upload, local for download)
     -H, --host <hostname>         Remote server hostname or IP
     -u, --username <username>     Username for authentication
 
@@ -76,6 +83,7 @@ Authentication (one required):
 
 Optional Arguments:
     -h, --help                    Show this help message and exit
+    -d, --download                Download mode: transfer from remote to local (default: upload)
     -P, --port <port>             SSH/SFTP port (default: 22)
     --no-remove                   Do not remove source file after transfer (for testing)
     -c, --checksum <algorithm>    Enable checksum verification (md5, sha1, or sha256)
@@ -84,27 +92,32 @@ Optional Arguments:
 
 ### Examples
 
-#### Example 1: Transfer to a custom port
+#### Example 1: Upload to a custom port
 ```bash
 perl sftp_transfer.pl -H server.example.com -P 2222 -u username -p password /path/to/file.txt /remote/path/file.txt
 ```
 
-#### Example 2: Test without removing source file
+#### Example 2: Download from remote server
 ```bash
-perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa --no-remove /path/to/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -p password -d /remote/path/file.txt /path/to/local/file.txt
 ```
 
-#### Example 3: Verbose logging
+#### Example 3: Download without removing remote file
+```bash
+perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa -d --no-remove /remote/path/file.txt /local/file.txt
+```
+
+#### Example 4: Upload with verbose logging
 ```bash
 perl sftp_transfer.pl -H server.example.com -u username -p password -v /path/to/file.txt /remote/path/file.txt
 ```
 
-#### Example 4: Enable checksum verification for data integrity
+#### Example 5: Download with checksum verification
 ```bash
-perl sftp_transfer.pl -H server.example.com -u username -p password -c sha256 /path/to/file.txt /remote/path/file.txt
+perl sftp_transfer.pl -H server.example.com -u username -p password -d -c sha256 /remote/path/file.txt /local/file.txt
 ```
 
-#### Example 5: Checksum verification with MD5 algorithm
+#### Example 6: Upload with MD5 checksum verification
 ```bash
 perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa -c md5 /path/to/file.txt /remote/path/file.txt
 ```
@@ -113,6 +126,7 @@ perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa -c md5 
 
 The script performs the following steps:
 
+### Upload Mode (default)
 1. **Connect**: Establishes an SFTP connection to the remote server using the provided credentials
 2. **Transfer**: Uploads the local file to the specified remote path
 3. **Verify**: Confirms the transfer was successful by:
@@ -120,6 +134,16 @@ The script performs the following steps:
    - Comparing file sizes to ensure they match
    - Optionally comparing checksums (MD5, SHA1, or SHA256) for additional integrity verification
 4. **Cleanup**: Removes the source file only if verification passes
+5. **Report**: Provides detailed logging of all operations
+
+### Download Mode (-d flag)
+1. **Connect**: Establishes an SFTP connection to the remote server using the provided credentials
+2. **Transfer**: Downloads the remote file to the specified local path
+3. **Verify**: Confirms the transfer was successful by:
+   - Checking that the local file exists
+   - Comparing file sizes to ensure they match
+   - Optionally comparing checksums (MD5, SHA1, or SHA256) for additional integrity verification
+4. **Cleanup**: Removes the remote source file only if verification passes
 5. **Report**: Provides detailed logging of all operations
 
 ## Security Considerations
