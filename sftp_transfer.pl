@@ -118,6 +118,9 @@ unless (defined $opts{password} || defined $opts{key_file}) {
     exit 1;
 }
 
+# Declare global
+my $checksum;
+
 # Validate checksum algorithm if provided
 if (defined $opts{checksum}) {
     unless ($opts{checksum} =~ /^(md5|sha1|sha256)$/i) {
