@@ -118,9 +118,6 @@ unless (defined $opts{password} || defined $opts{key_file}) {
     exit 1;
 }
 
-# Declare global
-my $checksum;
-
 # Validate checksum algorithm if provided
 if (defined $opts{checksum}) {
     unless ($opts{checksum} =~ /^(md5|sha1|sha256)$/i) {
@@ -323,6 +320,7 @@ sub calculate_remote_checksum {
     }
     
     # Read the checksum from local temp file
+    my $checksum;
     if (open(my $fh, '<', $temp_local)) {
         $checksum = <$fh>;
         close($fh);
