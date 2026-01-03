@@ -8,6 +8,7 @@ A Perl script to securely transfer files using SFTP with automatic verification 
 - **Transfer Verification**: Automatically verifies that the file was successfully transferred by checking:
   - Remote file existence
   - File size match between local and remote files
+  - Optional checksum verification (MD5, SHA1, SHA256) for additional data integrity
 - **Automatic Cleanup**: Removes the source file after successful transfer and verification
 - **Flexible Authentication**: Supports both password and SSH key-based authentication
 - **Error Handling**: Comprehensive error handling and logging
@@ -77,6 +78,7 @@ Optional Arguments:
     -h, --help                    Show this help message and exit
     -P, --port <port>             SSH/SFTP port (default: 22)
     --no-remove                   Do not remove source file after transfer (for testing)
+    -c, --checksum <algorithm>    Enable checksum verification (md5, sha1, or sha256)
     -v, --verbose                 Enable verbose logging
 ```
 
@@ -97,6 +99,16 @@ perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa --no-re
 perl sftp_transfer.pl -H server.example.com -u username -p password -v /path/to/file.txt /remote/path/file.txt
 ```
 
+#### Example 4: Enable checksum verification for data integrity
+```bash
+perl sftp_transfer.pl -H server.example.com -u username -p password -c sha256 /path/to/file.txt /remote/path/file.txt
+```
+
+#### Example 5: Checksum verification with MD5 algorithm
+```bash
+perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa -c md5 /path/to/file.txt /remote/path/file.txt
+```
+
 ## How It Works
 
 The script performs the following steps:
@@ -106,6 +118,7 @@ The script performs the following steps:
 3. **Verify**: Confirms the transfer was successful by:
    - Checking that the remote file exists
    - Comparing file sizes to ensure they match
+   - Optionally comparing checksums (MD5, SHA1, or SHA256) for additional integrity verification
 4. **Cleanup**: Removes the source file only if verification passes
 5. **Report**: Provides detailed logging of all operations
 
