@@ -17,10 +17,11 @@
     Username for authentication (required)
 
 .PARAMETER Password
-    Password for authentication (use either Password or KeyFile)
+    Password for authentication (NOT SUPPORTED - use KeyFile instead)
+    Note: Windows built-in SSH commands do not support password authentication via command line.
 
 .PARAMETER KeyFile
-    Path to SSH private key file (use either Password or KeyFile)
+    Path to SSH private key file (REQUIRED for authentication)
 
 .PARAMETER Port
     SSH/SFTP port (default: 22)
@@ -44,20 +45,16 @@
     Destination file path (remote for upload, local for download)
 
 .EXAMPLE
-    # Upload using password authentication
-    .\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -SourceFile C:\file.txt -DestinationFile /remote/file.txt
-
-.EXAMPLE
-    # Upload using SSH key
+    # Upload using SSH key authentication
     .\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -SourceFile C:\file.txt -DestinationFile /remote/file.txt
 
 .EXAMPLE
     # Download from remote server
-    .\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Download -SourceFile /remote/file.txt -DestinationFile C:\file.txt
+    .\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Download -SourceFile /remote/file.txt -DestinationFile C:\file.txt
 
 .EXAMPLE
     # Upload with SHA256 checksum verification
-    .\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Checksum SHA256 -SourceFile C:\file.txt -DestinationFile /remote/file.txt
+    .\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Checksum SHA256 -SourceFile C:\file.txt -DestinationFile /remote/file.txt
 
 .NOTES
     Requires Windows OpenSSH client (ssh.exe and sftp.exe)
@@ -559,7 +556,7 @@ function Main {
                     return 1
                 }
                 
-                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $PortNumber -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
+                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
                 if (-not $remoteChecksum) {
                     Write-LogError "Failed to calculate remote checksum"
                     return 1
