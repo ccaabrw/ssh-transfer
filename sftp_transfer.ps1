@@ -102,22 +102,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Module check
-$moduleName = 'Posh-SSH'
-if (-not (Get-Module -ListAvailable -Name $moduleName)) {
-    Write-LogError "Error: $moduleName module is required."
-    Write-LogError "Install it with: Install-Module -Name $moduleName -Force"
-    exit 1
-}
-
-# Import the module
-try {
-    Import-Module $moduleName -ErrorAction Stop
-} catch {
-    Write-LogError "Failed to import $moduleName module: $_"
-    exit 1
-}
-
 #region Logging Functions
 
 function Get-Timestamp {
@@ -151,6 +135,22 @@ function Write-LogDebug {
 }
 
 #endregion
+
+# Module check and import
+$moduleName = 'Posh-SSH'
+if (-not (Get-Module -ListAvailable -Name $moduleName)) {
+    Write-LogError "Error: $moduleName module is required."
+    Write-LogError "Install it with: Install-Module -Name $moduleName -Force"
+    exit 1
+}
+
+# Import the module
+try {
+    Import-Module $moduleName -ErrorAction Stop
+} catch {
+    Write-LogError "Failed to import $moduleName module: $_"
+    exit 1
+}
 
 #region SFTP Functions
 
@@ -287,7 +287,10 @@ function Get-LocalChecksum {
 
 function Get-RemoteChecksum {
     param(
-        [object]$Session,
+        [string]$Hostname,
+        [int]$PortNumber,
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$KeyFilePath,
         [string]$RemotePath,
         [string]$Algorithm
     )
@@ -297,40 +300,59 @@ function Get-RemoteChecksum {
         
         # Map algorithm to the appropriate command
         $cmd = switch ($Algorithm) {
-            'MD5'    { "(md5sum '$RemotePath' 2>/dev/null || md5 -r '$RemotePath' 2>/dev/null) | awk '{print `$1}'" }
-            'SHA1'   { "(sha1sum '$RemotePath' 2>/dev/null || shasum -a 1 '$RemotePath' 2>/dev/null) | awk '{print `$1}'" }
-            'SHA256' { "(sha256sum '$RemotePath' 2>/dev/null || shasum -a 256 '$RemotePath' 2>/dev/null) | awk '{print `$1}'" }
+            'MD5'    { "(md5sum '$RemotePath' 2>/dev/null || md5 -r '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
+            'SHA1'   { "(sha1sum '$RemotePath' 2>/dev/null || shasum -a 1 '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
+            'SHA256' { "(sha256sum '$RemotePath' 2>/dev/null || shasum -a 256 '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
             default  { 
                 Write-LogError "Unsupported checksum algorithm: $Algorithm"
                 return $null
             }
         }
         
-        # Execute command on remote server
-        $result = Invoke-SSHCommand -SessionId $Session.SessionId -Command $cmd -ErrorAction Stop
-        
-        if ($result.ExitStatus -ne 0) {
-            Write-LogError "Failed to execute remote checksum command"
-            return $null
+        # Create SSH session for command execution
+        $sshParams = @{
+            ComputerName = $Hostname
+            Port = $PortNumber
+            Credential = $Credential
+            AcceptKey = $true
         }
         
-        $checksum = $result.Output.Trim()
-        
-        # Validate checksum format
-        $expectedLengths = @{
-            'MD5'    = 32
-            'SHA1'   = 40
-            'SHA256' = 64
+        if ($KeyFilePath) {
+            $sshParams['KeyFile'] = $KeyFilePath
         }
         
-        $expectedLength = $expectedLengths[$Algorithm]
-        if (-not ($checksum -match '^[a-f0-9]+$' -and $checksum.Length -eq $expectedLength)) {
-            Write-LogError "Invalid checksum format received: $checksum (expected $expectedLength hex characters)"
-            return $null
-        }
+        $sshSession = New-SSHSession @sshParams -ErrorAction Stop
         
-        Write-LogDebug "Remote $Algorithm checksum: $checksum"
-        return $checksum.ToLower()
+        try {
+            # Execute command on remote server
+            $result = Invoke-SSHCommand -SessionId $sshSession.SessionId -Command $cmd -ErrorAction Stop
+            
+            if ($result.ExitStatus -ne 0) {
+                Write-LogError "Failed to execute remote checksum command"
+                return $null
+            }
+            
+            $checksum = $result.Output.Trim()
+            
+            # Validate checksum format
+            $expectedLengths = @{
+                'MD5'    = 32
+                'SHA1'   = 40
+                'SHA256' = 64
+            }
+            
+            $expectedLength = $expectedLengths[$Algorithm]
+            if (-not ($checksum -match '^[a-f0-9]+$' -and $checksum.Length -eq $expectedLength)) {
+                Write-LogError "Invalid checksum format received: $checksum (expected $expectedLength hex characters)"
+                return $null
+            }
+            
+            Write-LogDebug "Remote $Algorithm checksum: $checksum"
+            return $checksum.ToLower()
+        } finally {
+            # Clean up SSH session
+            Remove-SSHSession -SessionId $sshSession.SessionId -ErrorAction SilentlyContinue | Out-Null
+        }
     } catch {
         Write-LogError "Failed to calculate remote checksum: $_"
         return $null
@@ -342,7 +364,11 @@ function Test-SftpTransfer {
         [object]$Session,
         [string]$LocalPath,
         [string]$RemotePath,
-        [string]$ChecksumAlgorithm
+        [string]$ChecksumAlgorithm,
+        [string]$Hostname,
+        [int]$PortNumber,
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$KeyFilePath
     )
     
     try {
@@ -379,7 +405,7 @@ function Test-SftpTransfer {
                 return $false
             }
             
-            $remoteChecksum = Get-RemoteChecksum -Session $Session -RemotePath $RemotePath -Algorithm $ChecksumAlgorithm
+            $remoteChecksum = Get-RemoteChecksum -Hostname $Hostname -PortNumber $PortNumber -Credential $Credential -KeyFilePath $KeyFilePath -RemotePath $RemotePath -Algorithm $ChecksumAlgorithm
             if (-not $remoteChecksum) {
                 Write-LogError "Failed to calculate remote checksum"
                 return $false
@@ -466,6 +492,18 @@ function Main {
         
         # Step 1: Connect to remote server
         Write-LogInfo "Connecting to ${Host}:${Port} as $Username"
+        
+        # Prepare credential for checksum verification
+        $credential = $null
+        if ($Password) {
+            $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+            $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
+        } elseif ($KeyFile) {
+            # Create a dummy credential for key-based auth
+            $securePassword = ConvertTo-SecureString "dummy" -AsPlainText -Force
+            $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
+        }
+        
         $session = Connect-SftpServer -Hostname $Host -User $Username -PortNumber $Port -Pass $Password -Key $KeyFile
         if (-not $session) {
             Write-LogError "Failed to establish SFTP connection"
@@ -495,7 +533,7 @@ function Main {
                 
                 # Step 3: Verify the transfer
                 Write-LogInfo "Verifying file download..."
-                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum)) {
+                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum -Hostname $Host -PortNumber $Port -Credential $credential -KeyFilePath $KeyFile)) {
                     Write-LogError "File download verification failed"
                     return 1
                 }
@@ -524,7 +562,7 @@ function Main {
                 
                 # Step 3: Verify the transfer
                 Write-LogInfo "Verifying file transfer..."
-                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum)) {
+                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum -Hostname $Host -PortNumber $Port -Credential $credential -KeyFilePath $KeyFile)) {
                     Write-LogError "File transfer verification failed"
                     return 1
                 }
