@@ -146,28 +146,6 @@ function Test-SshAvailable {
     }
 }
 
-function Get-SshOptions {
-    param(
-        [string]$KeyFilePath,
-        [int]$PortNumber
-    )
-    
-    $options = @()
-    $options += "-o"
-    $options += "StrictHostKeyChecking=no"
-    $options += "-o"
-    $options += "UserKnownHostsFile=NUL"
-    $options += "-P"
-    $options += $PortNumber.ToString()
-    
-    if ($KeyFilePath) {
-        $options += "-i"
-        $options += "`"$KeyFilePath`""
-    }
-    
-    return $options
-}
-
 function Test-RemoteFileExists {
     param(
         [string]$Hostname,
@@ -275,7 +253,7 @@ function Invoke-SftpTransfer {
             # Upload mode - create remote directory if needed
             $remoteDir = Split-Path $RemotePath -Parent
             if ($remoteDir -and $remoteDir -ne '' -and $remoteDir -ne '.' -and $remoteDir -ne '/') {
-                "-mkdir `"$remoteDir`"" | Out-File -FilePath $batchFile -Encoding ASCII
+                "mkdir `"$remoteDir`"" | Out-File -FilePath $batchFile -Encoding ASCII
             }
             "put `"$LocalPath`" `"$RemotePath`"" | Out-File -FilePath $batchFile -Encoding ASCII -Append
         }
@@ -353,9 +331,9 @@ function Get-RemoteChecksum {
         
         # Map algorithm to the appropriate command
         $cmd = switch ($Algorithm) {
-            'MD5'    { "(md5sum '$RemotePath' 2>/dev/null || md5 -r '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
-            'SHA1'   { "(sha1sum '$RemotePath' 2>/dev/null || shasum -a 1 '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
-            'SHA256' { "(sha256sum '$RemotePath' 2>/dev/null || shasum -a 256 '$RemotePath' 2>/dev/null) | awk '{print \$1}'" }
+            'MD5'    { '(md5sum ' + "'$RemotePath'" + ' 2>/dev/null || md5 -r ' + "'$RemotePath'" + ' 2>/dev/null) | awk ' + "'{print `$1}'" }
+            'SHA1'   { '(sha1sum ' + "'$RemotePath'" + ' 2>/dev/null || shasum -a 1 ' + "'$RemotePath'" + ' 2>/dev/null) | awk ' + "'{print `$1}'" }
+            'SHA256' { '(sha256sum ' + "'$RemotePath'" + ' 2>/dev/null || shasum -a 256 ' + "'$RemotePath'" + ' 2>/dev/null) | awk ' + "'{print `$1}'" }
             default  { 
                 Write-LogError "Unsupported checksum algorithm: $Algorithm"
                 return $null
