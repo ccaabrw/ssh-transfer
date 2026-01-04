@@ -7,6 +7,8 @@
     It can upload files to a remote server or download files from a remote server.
     The transfer is verified by comparing file sizes and optionally checksums,
     and the source file is removed after successful verification.
+    
+    Uses Windows built-in OpenSSH client (available on Windows 10 1809+ and Windows Server 2019+).
 
 .PARAMETER Host
     Remote server hostname or IP address (required)
@@ -58,7 +60,9 @@
     .\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Checksum SHA256 -SourceFile C:\file.txt -DestinationFile /remote/file.txt
 
 .NOTES
-    Requires Posh-SSH module (Install-Module -Name Posh-SSH)
+    Requires Windows OpenSSH client (ssh.exe and sftp.exe)
+    Available by default on Windows 10 1809+ and Windows Server 2019+
+    
     Exit Codes:
         0 - Success: file transferred, verified, and removed
         1 - Failure: see error messages for details
@@ -136,134 +140,213 @@ function Write-LogDebug {
 
 #endregion
 
-# Module check and import
-$moduleName = 'Posh-SSH'
-if (-not (Get-Module -ListAvailable -Name $moduleName)) {
-    Write-LogError "Error: $moduleName module is required."
-    Write-LogError "Install it with: Install-Module -Name $moduleName -Force"
-    exit 1
-}
+#region SSH/SFTP Functions
 
-# Import the module
-try {
-    Import-Module $moduleName -ErrorAction Stop
-} catch {
-    Write-LogError "Failed to import $moduleName module: $_"
-    exit 1
-}
-
-#region SFTP Functions
-
-function Connect-SftpServer {
-    param(
-        [string]$Hostname,
-        [string]$User,
-        [int]$PortNumber,
-        [string]$Pass,
-        [string]$Key
-    )
-    
+function Test-SshAvailable {
     try {
-        $sessionParams = @{
-            ComputerName = $Hostname
-            Port = $PortNumber
-            Credential = $null
-            AcceptKey = $true
-        }
-        
-        if ($Key) {
-            Write-LogInfo "Using key file: $Key"
-            if (-not (Test-Path $Key)) {
-                Write-LogError "Key file not found: $Key"
-                return $null
-            }
-            $sessionParams['KeyFile'] = $Key
-            # Create a dummy credential for key-based auth
-            $securePassword = ConvertTo-SecureString "dummy" -AsPlainText -Force
-            $sessionParams['Credential'] = New-Object System.Management.Automation.PSCredential($User, $securePassword)
-        } elseif ($Pass) {
-            Write-LogInfo "Using password authentication"
-            $securePassword = ConvertTo-SecureString $Pass -AsPlainText -Force
-            $sessionParams['Credential'] = New-Object System.Management.Automation.PSCredential($User, $securePassword)
-        } else {
-            Write-LogError "Either Password or KeyFile must be provided"
-            return $null
-        }
-        
-        $session = New-SFTPSession @sessionParams -ErrorAction Stop
-        Write-LogInfo "SFTP connection established"
-        return $session
-    } catch {
-        Write-LogError "Connection failed: $_"
-        return $null
-    }
-}
-
-function Transfer-SftpFile {
-    param(
-        [object]$Session,
-        [string]$LocalPath,
-        [string]$RemotePath
-    )
-    
-    try {
-        # Get local file size
-        $localFile = Get-Item $LocalPath
-        Write-LogInfo "File size: $($localFile.Length) bytes"
-        
-        # Create remote directory if needed
-        $remoteDir = Split-Path $RemotePath -Parent
-        if ($remoteDir -and $remoteDir -ne '' -and $remoteDir -ne '.' -and $remoteDir -ne '/') {
-            Write-LogDebug "Ensuring remote directory exists: $remoteDir"
-            try {
-                # Create parent directories recursively
-                $null = Set-SFTPItem -SessionId $Session.SessionId -Path $remoteDir -ItemType Directory -ErrorAction SilentlyContinue
-            } catch {
-                # Directory might already exist, which is fine
-            }
-        }
-        
-        # Transfer the file
-        Set-SFTPItem -SessionId $Session.SessionId -Path $LocalPath -Destination $RemotePath -Force -ErrorAction Stop
-        
-        Write-LogInfo "File transfer completed"
+        $sshPath = Get-Command ssh.exe -ErrorAction Stop
+        $sftpPath = Get-Command sftp.exe -ErrorAction Stop
+        Write-LogDebug "Found ssh.exe at: $($sshPath.Source)"
+        Write-LogDebug "Found sftp.exe at: $($sftpPath.Source)"
         return $true
     } catch {
-        Write-LogError "Transfer failed: $_"
+        Write-LogError "OpenSSH client not found. Please install OpenSSH client."
+        Write-LogError "Install with: Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0"
         return $false
     }
 }
 
-function Download-SftpFile {
+function Get-SshOptions {
     param(
-        [object]$Session,
-        [string]$RemotePath,
-        [string]$LocalPath
+        [string]$KeyFilePath,
+        [int]$PortNumber
+    )
+    
+    $options = @()
+    $options += "-o"
+    $options += "StrictHostKeyChecking=no"
+    $options += "-o"
+    $options += "UserKnownHostsFile=NUL"
+    $options += "-P"
+    $options += $PortNumber.ToString()
+    
+    if ($KeyFilePath) {
+        $options += "-i"
+        $options += "`"$KeyFilePath`""
+    }
+    
+    return $options
+}
+
+function Test-RemoteFileExists {
+    param(
+        [string]$Hostname,
+        [string]$User,
+        [int]$PortNumber,
+        [string]$KeyFilePath,
+        [string]$Pass,
+        [string]$RemotePath
     )
     
     try {
-        # Get remote file size
-        $remoteFile = Get-SFTPItem -SessionId $Session.SessionId -Path $RemotePath -ErrorAction Stop
-        if (-not $remoteFile) {
-            Write-LogError "Remote file not found: $RemotePath"
+        $cmd = "test -f '$RemotePath' && echo 'EXISTS' || echo 'NOT_FOUND'"
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        
+        return ($result.Output -match 'EXISTS')
+    } catch {
+        Write-LogDebug "Error checking remote file: $_"
+        return $false
+    }
+}
+
+function Get-RemoteFileSize {
+    param(
+        [string]$Hostname,
+        [string]$User,
+        [int]$PortNumber,
+        [string]$KeyFilePath,
+        [string]$Pass,
+        [string]$RemotePath
+    )
+    
+    try {
+        $cmd = "stat -c %s '$RemotePath' 2>/dev/null || stat -f %z '$RemotePath' 2>/dev/null"
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        
+        if ($result.ExitCode -eq 0 -and $result.Output -match '^\d+$') {
+            return [long]$result.Output
+        }
+        
+        return $null
+    } catch {
+        Write-LogDebug "Error getting remote file size: $_"
+        return $null
+    }
+}
+
+function Invoke-SshCommand {
+    param(
+        [string]$Hostname,
+        [string]$User,
+        [int]$PortNumber,
+        [string]$KeyFilePath,
+        [string]$Pass,
+        [string]$Command
+    )
+    
+    $sshArgs = @()
+    $sshArgs += "-o"
+    $sshArgs += "StrictHostKeyChecking=no"
+    $sshArgs += "-o"
+    $sshArgs += "UserKnownHostsFile=NUL"
+    $sshArgs += "-p"
+    $sshArgs += $PortNumber
+    
+    if ($KeyFilePath) {
+        $sshArgs += "-i"
+        $sshArgs += $KeyFilePath
+    }
+    
+    $sshArgs += "$User@$Hostname"
+    $sshArgs += $Command
+    
+    Write-LogDebug "Executing SSH command: ssh $($sshArgs -join ' ')"
+    
+    if ($Pass) {
+        # Use sshpass-like functionality via stdin (not ideal but works)
+        # Note: This is a limitation - password auth via command line is not secure
+        Write-LogError "Password authentication via SSH command is not directly supported."
+        Write-LogError "Please use key-based authentication or consider using Posh-SSH module."
+        throw "Password authentication not supported with built-in SSH"
+    }
+    
+    $output = & ssh.exe @sshArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    
+    return @{
+        Output = ($output | Out-String).Trim()
+        ExitCode = $exitCode
+    }
+}
+
+function Invoke-SftpTransfer {
+    param(
+        [string]$Hostname,
+        [string]$User,
+        [int]$PortNumber,
+        [string]$KeyFilePath,
+        [string]$Pass,
+        [string]$LocalPath,
+        [string]$RemotePath,
+        [bool]$IsDownload
+    )
+    
+    try {
+        # Create SFTP batch file
+        $batchFile = [System.IO.Path]::GetTempFileName()
+        
+        if ($IsDownload) {
+            # Download mode
+            $localDir = Split-Path $LocalPath -Parent
+            if ($localDir -and -not (Test-Path $localDir)) {
+                New-Item -Path $localDir -ItemType Directory -Force | Out-Null
+            }
+            
+            "get `"$RemotePath`" `"$LocalPath`"" | Out-File -FilePath $batchFile -Encoding ASCII
+        } else {
+            # Upload mode - create remote directory if needed
+            $remoteDir = Split-Path $RemotePath -Parent
+            if ($remoteDir -and $remoteDir -ne '' -and $remoteDir -ne '.' -and $remoteDir -ne '/') {
+                "-mkdir `"$remoteDir`"" | Out-File -FilePath $batchFile -Encoding ASCII
+            }
+            "put `"$LocalPath`" `"$RemotePath`"" | Out-File -FilePath $batchFile -Encoding ASCII -Append
+        }
+        
+        Write-LogDebug "SFTP batch file content:"
+        Write-LogDebug (Get-Content $batchFile | Out-String)
+        
+        # Build SFTP command arguments
+        $sftpArgs = @()
+        $sftpArgs += "-b"
+        $sftpArgs += $batchFile
+        $sftpArgs += "-o"
+        $sftpArgs += "StrictHostKeyChecking=no"
+        $sftpArgs += "-o"
+        $sftpArgs += "UserKnownHostsFile=NUL"
+        $sftpArgs += "-P"
+        $sftpArgs += $PortNumber
+        
+        if ($KeyFilePath) {
+            $sftpArgs += "-i"
+            $sftpArgs += $KeyFilePath
+        }
+        
+        if ($Pass) {
+            # Password authentication is problematic with sftp.exe on Windows
+            # We need to handle this differently
+            Write-LogError "Password authentication via SFTP is not directly supported with Windows OpenSSH client."
+            Write-LogError "Please use key-based authentication."
+            throw "Password authentication not supported"
+        }
+        
+        $sftpArgs += "$User@$Hostname"
+        
+        Write-LogDebug "Executing SFTP: sftp $($sftpArgs -join ' ')"
+        
+        $output = & sftp.exe @sftpArgs 2>&1
+        $exitCode = $LASTEXITCODE
+        
+        Remove-Item $batchFile -Force -ErrorAction SilentlyContinue
+        
+        if ($exitCode -ne 0) {
+            Write-LogError "SFTP command failed with exit code: $exitCode"
+            Write-LogDebug "Output: $($output | Out-String)"
             return $false
         }
-        Write-LogInfo "File size: $($remoteFile.Length) bytes"
         
-        # Create local directory if needed
-        $localDir = Split-Path $LocalPath -Parent
-        if ($localDir -and $localDir -ne '' -and -not (Test-Path $localDir)) {
-            Write-LogDebug "Ensuring local directory exists: $localDir"
-            New-Item -Path $localDir -ItemType Directory -Force | Out-Null
-        }
-        
-        # Download the file
-        Get-SFTPItem -SessionId $Session.SessionId -Path $RemotePath -Destination $LocalPath -Force -ErrorAction Stop
-        
-        Write-LogInfo "File download completed"
         return $true
     } catch {
-        Write-LogError "Download failed: $_"
+        Write-LogError "SFTP transfer failed: $_"
         return $false
     }
 }
@@ -288,9 +371,10 @@ function Get-LocalChecksum {
 function Get-RemoteChecksum {
     param(
         [string]$Hostname,
+        [string]$User,
         [int]$PortNumber,
-        [System.Management.Automation.PSCredential]$Credential,
         [string]$KeyFilePath,
+        [string]$Pass,
         [string]$RemotePath,
         [string]$Algorithm
     )
@@ -309,152 +393,59 @@ function Get-RemoteChecksum {
             }
         }
         
-        # Create SSH session for command execution
-        $sshParams = @{
-            ComputerName = $Hostname
-            Port = $PortNumber
-            Credential = $Credential
-            AcceptKey = $true
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        
+        if ($result.ExitCode -ne 0) {
+            Write-LogError "Failed to execute remote checksum command"
+            return $null
         }
         
-        if ($KeyFilePath) {
-            $sshParams['KeyFile'] = $KeyFilePath
+        $checksum = $result.Output.Trim()
+        
+        # Validate checksum format
+        $expectedLengths = @{
+            'MD5'    = 32
+            'SHA1'   = 40
+            'SHA256' = 64
         }
         
-        $sshSession = New-SSHSession @sshParams -ErrorAction Stop
-        
-        try {
-            # Execute command on remote server
-            $result = Invoke-SSHCommand -SessionId $sshSession.SessionId -Command $cmd -ErrorAction Stop
-            
-            if ($result.ExitStatus -ne 0) {
-                Write-LogError "Failed to execute remote checksum command"
-                return $null
-            }
-            
-            $checksum = $result.Output.Trim()
-            
-            # Validate checksum format
-            $expectedLengths = @{
-                'MD5'    = 32
-                'SHA1'   = 40
-                'SHA256' = 64
-            }
-            
-            $expectedLength = $expectedLengths[$Algorithm]
-            if (-not ($checksum -match '^[a-f0-9]+$' -and $checksum.Length -eq $expectedLength)) {
-                Write-LogError "Invalid checksum format received: $checksum (expected $expectedLength hex characters)"
-                return $null
-            }
-            
-            Write-LogDebug "Remote $Algorithm checksum: $checksum"
-            return $checksum.ToLower()
-        } finally {
-            # Clean up SSH session
-            Remove-SSHSession -SessionId $sshSession.SessionId -ErrorAction SilentlyContinue | Out-Null
+        $expectedLength = $expectedLengths[$Algorithm]
+        if (-not ($checksum -match '^[a-fA-F0-9]+$' -and $checksum.Length -eq $expectedLength)) {
+            Write-LogError "Invalid checksum format received: $checksum (expected $expectedLength hex characters)"
+            return $null
         }
+        
+        Write-LogDebug "Remote $Algorithm checksum: $checksum"
+        return $checksum.ToLower()
     } catch {
         Write-LogError "Failed to calculate remote checksum: $_"
         return $null
     }
 }
 
-function Test-SftpTransfer {
+function Remove-RemoteFile {
     param(
-        [object]$Session,
-        [string]$LocalPath,
-        [string]$RemotePath,
-        [string]$ChecksumAlgorithm,
         [string]$Hostname,
+        [string]$User,
         [int]$PortNumber,
-        [System.Management.Automation.PSCredential]$Credential,
-        [string]$KeyFilePath
-    )
-    
-    try {
-        # Get remote file attributes
-        $remoteFile = Get-SFTPItem -SessionId $Session.SessionId -Path $RemotePath -ErrorAction Stop
-        if (-not $remoteFile) {
-            Write-LogError "Remote file not found: $RemotePath"
-            return $false
-        }
-        
-        # Get file sizes
-        $localFile = Get-Item $LocalPath
-        $localSize = $localFile.Length
-        $remoteSize = $remoteFile.Length
-        
-        Write-LogInfo "Local file size: $localSize bytes"
-        Write-LogInfo "Remote file size: $remoteSize bytes"
-        
-        # Compare sizes
-        if ($localSize -ne $remoteSize) {
-            Write-LogError "File sizes do not match!"
-            return $false
-        }
-        
-        Write-LogSuccess "File size verification passed"
-        
-        # Perform checksum verification if requested
-        if ($ChecksumAlgorithm) {
-            Write-LogInfo "Performing checksum verification using $ChecksumAlgorithm..."
-            
-            $localChecksum = Get-LocalChecksum -FilePath $LocalPath -Algorithm $ChecksumAlgorithm
-            if (-not $localChecksum) {
-                Write-LogError "Failed to calculate local checksum"
-                return $false
-            }
-            
-            $remoteChecksum = Get-RemoteChecksum -Hostname $Hostname -PortNumber $PortNumber -Credential $Credential -KeyFilePath $KeyFilePath -RemotePath $RemotePath -Algorithm $ChecksumAlgorithm
-            if (-not $remoteChecksum) {
-                Write-LogError "Failed to calculate remote checksum"
-                return $false
-            }
-            
-            Write-LogInfo "Local checksum:  $localChecksum"
-            Write-LogInfo "Remote checksum: $remoteChecksum"
-            
-            if ($localChecksum -ne $remoteChecksum) {
-                Write-LogError "Checksum verification failed! Files do not match."
-                return $false
-            }
-            
-            Write-LogSuccess "Checksum verification passed"
-        }
-        
-        Write-LogSuccess "File transfer verified successfully"
-        return $true
-    } catch {
-        Write-LogError "Verification failed: $_"
-        return $false
-    }
-}
-
-function Remove-LocalFile {
-    param([string]$FilePath)
-    
-    try {
-        Write-LogInfo "Removing source file: $FilePath"
-        Remove-Item -Path $FilePath -Force -ErrorAction Stop
-        Write-LogSuccess "Source file removed successfully"
-        return $true
-    } catch {
-        Write-LogError "Failed to remove source file: $_"
-        return $false
-    }
-}
-
-function Remove-RemoteSftpFile {
-    param(
-        [object]$Session,
+        [string]$KeyFilePath,
+        [string]$Pass,
         [string]$RemotePath
     )
     
     try {
         Write-LogInfo "Removing remote file: $RemotePath"
-        Remove-SFTPItem -SessionId $Session.SessionId -Path $RemotePath -Force -ErrorAction Stop
-        Write-LogSuccess "Remote file removed successfully"
-        return $true
+        
+        $cmd = "rm -f '$RemotePath'"
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        
+        if ($result.ExitCode -eq 0) {
+            Write-LogSuccess "Remote file removed successfully"
+            return $true
+        } else {
+            Write-LogError "Failed to remove remote file"
+            return $false
+        }
     } catch {
         Write-LogError "Failed to remove remote file: $_"
         return $false
@@ -467,9 +458,27 @@ function Remove-RemoteSftpFile {
 
 function Main {
     try {
+        # Check if OpenSSH client is available
+        if (-not (Test-SshAvailable)) {
+            return 1
+        }
+        
         # Validate authentication method
         if (-not $Password -and -not $KeyFile) {
             Write-LogError "Either -Password or -KeyFile must be provided"
+            return 1
+        }
+        
+        # Note: Password authentication is not supported with Windows built-in SSH
+        if ($Password) {
+            Write-LogError "Password authentication is not supported with Windows built-in OpenSSH client."
+            Write-LogError "Please use -KeyFile parameter for key-based authentication."
+            return 1
+        }
+        
+        # Validate key file exists
+        if ($KeyFile -and -not (Test-Path $KeyFile)) {
+            Write-LogError "Key file not found: $KeyFile"
             return 1
         }
         
@@ -481,7 +490,7 @@ function Main {
         # Validate source file exists based on mode
         if ($Download) {
             # In download mode, we'll check remote file existence after connecting
-            Write-LogDebug "Download mode: will verify remote file exists after connection"
+            Write-LogDebug "Download mode: will verify remote file exists"
         } else {
             # In upload mode, check local file exists
             if (-not (Test-Path $SourceFile)) {
@@ -490,104 +499,172 @@ function Main {
             }
         }
         
-        # Step 1: Connect to remote server
+        # Connection info
         Write-LogInfo "Connecting to ${Host}:${Port} as $Username"
-        
-        # Prepare credential for checksum verification
-        $credential = $null
-        if ($Password) {
-            $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
-        } elseif ($KeyFile) {
-            # Create a dummy credential for key-based auth
-            $securePassword = ConvertTo-SecureString "dummy" -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
+        if ($KeyFile) {
+            Write-LogInfo "Using key file: $KeyFile"
         }
         
-        $session = Connect-SftpServer -Hostname $Host -User $Username -PortNumber $Port -Pass $Password -Key $KeyFile
-        if (-not $session) {
-            Write-LogError "Failed to establish SFTP connection"
-            return 1
-        }
-        
-        try {
-            if ($Download) {
-                # Download mode: remote -> local
-                $remoteFile = $SourceFile
-                $localFile = $DestinationFile
-                Write-LogInfo "Download mode: $remoteFile -> $localFile"
-                
-                # Verify remote file exists
-                $remoteFileInfo = Get-SFTPItem -SessionId $session.SessionId -Path $remoteFile -ErrorAction SilentlyContinue
-                if (-not $remoteFileInfo) {
-                    Write-LogError "Remote file not found: $remoteFile"
-                    return 1
-                }
-                
-                # Step 2: Download the file
-                Write-LogInfo "Downloading $remoteFile to $localFile"
-                if (-not (Download-SftpFile -Session $session -RemotePath $remoteFile -LocalPath $localFile)) {
-                    Write-LogError "File download failed"
-                    return 1
-                }
-                
-                # Step 3: Verify the transfer
-                Write-LogInfo "Verifying file download..."
-                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum -Hostname $Host -PortNumber $Port -Credential $credential -KeyFilePath $KeyFile)) {
-                    Write-LogError "File download verification failed"
-                    return 1
-                }
-                
-                # Step 4: Remove remote source file (unless -NoRemove flag is set)
-                if (-not $NoRemove) {
-                    if (-not (Remove-RemoteSftpFile -Session $session -RemotePath $remoteFile)) {
-                        Write-LogError "Failed to remove remote source file"
-                        return 1
-                    }
-                } else {
-                    Write-LogInfo "Skipping remote file removal (-NoRemove flag set)"
-                }
-            } else {
-                # Upload mode: local -> remote
-                $localFile = $SourceFile
-                $remoteFile = $DestinationFile
-                Write-LogInfo "Upload mode: $localFile -> $remoteFile"
-                
-                # Step 2: Transfer the file
-                Write-LogInfo "Transferring $localFile to $remoteFile"
-                if (-not (Transfer-SftpFile -Session $session -LocalPath $localFile -RemotePath $remoteFile)) {
-                    Write-LogError "File transfer failed"
-                    return 1
-                }
-                
-                # Step 3: Verify the transfer
-                Write-LogInfo "Verifying file transfer..."
-                if (-not (Test-SftpTransfer -Session $session -LocalPath $localFile -RemotePath $remoteFile -ChecksumAlgorithm $Checksum -Hostname $Host -PortNumber $Port -Credential $credential -KeyFilePath $KeyFile)) {
-                    Write-LogError "File transfer verification failed"
-                    return 1
-                }
-                
-                # Step 4: Remove local source file (unless -NoRemove flag is set)
-                if (-not $NoRemove) {
-                    if (-not (Remove-LocalFile -FilePath $localFile)) {
-                        Write-LogError "Failed to remove source file"
-                        return 1
-                    }
-                } else {
-                    Write-LogInfo "Skipping source file removal (-NoRemove flag set)"
-                }
+        if ($Download) {
+            # Download mode: remote -> local
+            $remoteFile = $SourceFile
+            $localFile = $DestinationFile
+            Write-LogInfo "Download mode: $remoteFile -> $localFile"
+            
+            # Verify remote file exists
+            Write-LogDebug "Checking if remote file exists..."
+            if (-not (Test-RemoteFileExists -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile)) {
+                Write-LogError "Remote file not found: $remoteFile"
+                return 1
             }
             
-            Write-LogSuccess "All operations completed successfully"
-            return 0
-        } finally {
-            # Clean up SFTP session
-            if ($session) {
-                Remove-SFTPSession -SessionId $session.SessionId -ErrorAction SilentlyContinue | Out-Null
+            # Get remote file size
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            if ($remoteSize) {
+                Write-LogInfo "Remote file size: $remoteSize bytes"
+            }
+            
+            # Step 2: Download the file
+            Write-LogInfo "Downloading $remoteFile to $localFile"
+            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -LocalPath $localFile -RemotePath $remoteFile -IsDownload $true)) {
+                Write-LogError "File download failed"
+                return 1
+            }
+            Write-LogInfo "File download completed"
+            
+            # Step 3: Verify the transfer
+            Write-LogInfo "Verifying file download..."
+            
+            # Get file sizes
+            $localSize = (Get-Item $localFile).Length
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            
+            Write-LogInfo "Local file size: $localSize bytes"
+            Write-LogInfo "Remote file size: $remoteSize bytes"
+            
+            if ($localSize -ne $remoteSize) {
+                Write-LogError "File sizes do not match!"
+                return 1
+            }
+            
+            Write-LogSuccess "File size verification passed"
+            
+            # Perform checksum verification if requested
+            if ($Checksum) {
+                Write-LogInfo "Performing checksum verification using $Checksum..."
+                
+                $localChecksum = Get-LocalChecksum -FilePath $localFile -Algorithm $Checksum
+                if (-not $localChecksum) {
+                    Write-LogError "Failed to calculate local checksum"
+                    return 1
+                }
+                
+                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $PortNumber -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
+                if (-not $remoteChecksum) {
+                    Write-LogError "Failed to calculate remote checksum"
+                    return 1
+                }
+                
+                Write-LogInfo "Local checksum:  $localChecksum"
+                Write-LogInfo "Remote checksum: $remoteChecksum"
+                
+                if ($localChecksum -ne $remoteChecksum) {
+                    Write-LogError "Checksum verification failed! Files do not match."
+                    return 1
+                }
+                
+                Write-LogSuccess "Checksum verification passed"
+            }
+            
+            Write-LogSuccess "File transfer verified successfully"
+            
+            # Step 4: Remove remote source file (unless -NoRemove flag is set)
+            if (-not $NoRemove) {
+                if (-not (Remove-RemoteFile -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile)) {
+                    Write-LogError "Failed to remove remote source file"
+                    return 1
+                }
+            } else {
+                Write-LogInfo "Skipping remote file removal (-NoRemove flag set)"
+            }
+        } else {
+            # Upload mode: local -> remote
+            $localFile = $SourceFile
+            $remoteFile = $DestinationFile
+            Write-LogInfo "Upload mode: $localFile -> $remoteFile"
+            
+            # Get local file size
+            $localSize = (Get-Item $localFile).Length
+            Write-LogInfo "Local file size: $localSize bytes"
+            
+            # Step 2: Transfer the file
+            Write-LogInfo "Transferring $localFile to $remoteFile"
+            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -LocalPath $localFile -RemotePath $remoteFile -IsDownload $false)) {
+                Write-LogError "File transfer failed"
+                return 1
+            }
+            Write-LogInfo "File transfer completed"
+            
+            # Step 3: Verify the transfer
+            Write-LogInfo "Verifying file transfer..."
+            
+            # Get remote file size
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            
+            Write-LogInfo "Local file size: $localSize bytes"
+            Write-LogInfo "Remote file size: $remoteSize bytes"
+            
+            if ($localSize -ne $remoteSize) {
+                Write-LogError "File sizes do not match!"
+                return 1
+            }
+            
+            Write-LogSuccess "File size verification passed"
+            
+            # Perform checksum verification if requested
+            if ($Checksum) {
+                Write-LogInfo "Performing checksum verification using $Checksum..."
+                
+                $localChecksum = Get-LocalChecksum -FilePath $localFile -Algorithm $Checksum
+                if (-not $localChecksum) {
+                    Write-LogError "Failed to calculate local checksum"
+                    return 1
+                }
+                
+                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
+                if (-not $remoteChecksum) {
+                    Write-LogError "Failed to calculate remote checksum"
+                    return 1
+                }
+                
+                Write-LogInfo "Local checksum:  $localChecksum"
+                Write-LogInfo "Remote checksum: $remoteChecksum"
+                
+                if ($localChecksum -ne $remoteChecksum) {
+                    Write-LogError "Checksum verification failed! Files do not match."
+                    return 1
+                }
+                
+                Write-LogSuccess "Checksum verification passed"
+            }
+            
+            Write-LogSuccess "File transfer verified successfully"
+            
+            # Step 4: Remove local source file (unless -NoRemove flag is set)
+            if (-not $NoRemove) {
+                Write-LogInfo "Removing source file: $localFile"
+                Remove-Item -Path $localFile -Force -ErrorAction Stop
+                Write-LogSuccess "Source file removed successfully"
+            } else {
+                Write-LogInfo "Skipping source file removal (-NoRemove flag set)"
             }
         }
+        
+        Write-LogSuccess "All operations completed successfully"
+        return 0
     } catch {
         Write-LogError "Unexpected error: $_"
+        Write-LogDebug $_.ScriptStackTrace
         return 1
     }
 }

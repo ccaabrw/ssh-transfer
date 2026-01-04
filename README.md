@@ -24,7 +24,9 @@ Scripts to securely transfer files using SFTP with automatic verification and cl
 
 ### PowerShell Script
 - PowerShell 5.1 or higher (Windows PowerShell or PowerShell Core)
-- Posh-SSH module
+- Windows OpenSSH client (ssh.exe and sftp.exe)
+  - Available by default on Windows 10 1809+ and Windows Server 2019+
+  - Can be installed on older versions via: `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`
 
 ## Installation
 
@@ -55,10 +57,16 @@ sudo yum install perl-Net-SFTP-Foreign
 
 ### For PowerShell Script
 
-**Using PowerShell:**
+The PowerShell script uses Windows built-in OpenSSH client, which is available by default on:
+- Windows 10 version 1809 or later
+- Windows Server 2019 or later
+
+For older Windows versions, install OpenSSH client:
 ```powershell
-Install-Module -Name Posh-SSH -Force
+Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
 ```
+
+**Note:** The PowerShell script currently supports **key-based authentication only**. Password authentication is not supported when using Windows built-in SSH commands.
 
 ## Usage
 
@@ -140,21 +148,18 @@ perl sftp_transfer.pl -H server.example.com -u username -k ~/.ssh/id_rsa -c md5 
 
 ### PowerShell Script
 
+**Note:** PowerShell script supports key-based authentication only.
+
 #### Basic Usage
 
-Transfer a file to remote server using password authentication:
-```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -SourceFile C:\path\to\file.txt -DestinationFile /remote/path/file.txt
-```
-
-Download a file from remote server using password authentication:
-```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Download -SourceFile /remote/path/file.txt -DestinationFile C:\local\file.txt
-```
-
-Transfer a file using SSH key authentication:
+Transfer a file to remote server using SSH key authentication:
 ```powershell
 .\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -SourceFile C:\file.txt -DestinationFile /remote/path/file.txt
+```
+
+Download a file from remote server using SSH key authentication:
+```powershell
+.\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Download -SourceFile /remote/path/file.txt -DestinationFile C:\local\file.txt
 ```
 
 #### Command Line Parameters
@@ -169,9 +174,8 @@ Required Parameters:
     -Host <hostname>              Remote server hostname or IP
     -Username <username>          Username for authentication
 
-Authentication (one required):
-    -Password <password>          Password for authentication
-    -KeyFile <path>               Path to SSH private key file
+Authentication:
+    -KeyFile <path>               Path to SSH private key file (required)
 
 Optional Parameters:
     -Download                     Download mode: transfer from remote to local (default: upload)
@@ -185,12 +189,12 @@ Optional Parameters:
 
 ##### Example 1: Upload to a custom port
 ```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Port 2222 -Username user -Password pass -SourceFile C:\file.txt -DestinationFile /remote/file.txt
+.\sftp_transfer.ps1 -Host server.example.com -Port 2222 -Username user -KeyFile C:\Users\user\.ssh\id_rsa -SourceFile C:\file.txt -DestinationFile /remote/file.txt
 ```
 
 ##### Example 2: Download from remote server
 ```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Download -SourceFile /remote/file.txt -DestinationFile C:\local\file.txt
+.\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Download -SourceFile /remote/file.txt -DestinationFile C:\local\file.txt
 ```
 
 ##### Example 3: Download without removing remote file
@@ -200,12 +204,12 @@ Optional Parameters:
 
 ##### Example 4: Upload with verbose logging
 ```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Verbose -SourceFile C:\file.txt -DestinationFile /remote/file.txt
+.\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Verbose -SourceFile C:\file.txt -DestinationFile /remote/file.txt
 ```
 
 ##### Example 5: Download with checksum verification
 ```powershell
-.\sftp_transfer.ps1 -Host server.example.com -Username user -Password pass -Download -Checksum SHA256 -SourceFile /remote/file.txt -DestinationFile C:\file.txt
+.\sftp_transfer.ps1 -Host server.example.com -Username user -KeyFile C:\Users\user\.ssh\id_rsa -Download -Checksum SHA256 -SourceFile /remote/file.txt -DestinationFile C:\file.txt
 ```
 
 ##### Example 6: Upload with MD5 checksum verification
@@ -240,8 +244,9 @@ The script performs the following steps:
 ## Security Considerations
 
 - **Perl Script**: Uses `StrictHostKeyChecking=no` for host key verification. In production environments, you should implement proper host key verification.
-- **PowerShell Script**: The Posh-SSH module accepts host keys automatically with the `-AcceptKey` parameter. In production, you should verify host keys manually first.
-- Passwords provided on the command line may be visible in process listings. Using SSH key authentication is recommended for both scripts.
+- **PowerShell Script**: Uses Windows built-in OpenSSH client with `StrictHostKeyChecking=no`. In production, you should verify host keys manually first.
+- **PowerShell Script**: Only supports SSH key-based authentication. Password authentication is not available when using Windows built-in SSH commands.
+- Passwords provided on the command line (Perl script) may be visible in process listings. Using SSH key authentication is recommended for both scripts.
 - Both scripts only remove the source file after successful verification to prevent data loss.
 
 ## Exit Codes
