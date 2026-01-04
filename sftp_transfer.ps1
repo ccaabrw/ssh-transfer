@@ -16,12 +16,8 @@
 .PARAMETER Username
     Username for authentication (required)
 
-.PARAMETER Password
-    Password for authentication (NOT SUPPORTED - use KeyFile instead)
-    Note: Windows built-in SSH commands do not support password authentication via command line.
-
 .PARAMETER KeyFile
-    Path to SSH private key file (REQUIRED for authentication)
+    Path to SSH private key file (required for authentication)
 
 .PARAMETER Port
     SSH/SFTP port (default: 22)
@@ -73,10 +69,7 @@ param(
     [Parameter(Mandatory=$true, HelpMessage="Username for authentication")]
     [string]$Username,
     
-    [Parameter(HelpMessage="Password for authentication")]
-    [string]$Password,
-    
-    [Parameter(HelpMessage="Path to SSH private key file")]
+    [Parameter(Mandatory=$true, HelpMessage="Path to SSH private key file")]
     [string]$KeyFile,
     
     [Parameter(HelpMessage="SSH/SFTP port")]
@@ -181,13 +174,12 @@ function Test-RemoteFileExists {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$RemotePath
     )
     
     try {
         $cmd = "test -f '$RemotePath' && echo 'EXISTS' || echo 'NOT_FOUND'"
-        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Command $cmd
         
         return ($result.Output -match 'EXISTS')
     } catch {
@@ -202,13 +194,12 @@ function Get-RemoteFileSize {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$RemotePath
     )
     
     try {
         $cmd = "stat -c %s '$RemotePath' 2>/dev/null || stat -f %z '$RemotePath' 2>/dev/null"
-        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Command $cmd
         
         if ($result.ExitCode -eq 0 -and $result.Output -match '^\d+$') {
             return [long]$result.Output
@@ -227,7 +218,6 @@ function Invoke-SshCommand {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$Command
     )
     
@@ -249,14 +239,6 @@ function Invoke-SshCommand {
     
     Write-LogDebug "Executing SSH command: ssh $($sshArgs -join ' ')"
     
-    if ($Pass) {
-        # Use sshpass-like functionality via stdin (not ideal but works)
-        # Note: This is a limitation - password auth via command line is not secure
-        Write-LogError "Password authentication via SSH command is not directly supported."
-        Write-LogError "Please use key-based authentication or consider using Posh-SSH module."
-        throw "Password authentication not supported with built-in SSH"
-    }
-    
     $output = & ssh.exe @sshArgs 2>&1
     $exitCode = $LASTEXITCODE
     
@@ -272,7 +254,6 @@ function Invoke-SftpTransfer {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$LocalPath,
         [string]$RemotePath,
         [bool]$IsDownload
@@ -316,14 +297,6 @@ function Invoke-SftpTransfer {
         if ($KeyFilePath) {
             $sftpArgs += "-i"
             $sftpArgs += $KeyFilePath
-        }
-        
-        if ($Pass) {
-            # Password authentication is problematic with sftp.exe on Windows
-            # We need to handle this differently
-            Write-LogError "Password authentication via SFTP is not directly supported with Windows OpenSSH client."
-            Write-LogError "Please use key-based authentication."
-            throw "Password authentication not supported"
         }
         
         $sftpArgs += "$User@$Hostname"
@@ -371,7 +344,6 @@ function Get-RemoteChecksum {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$RemotePath,
         [string]$Algorithm
     )
@@ -390,7 +362,7 @@ function Get-RemoteChecksum {
             }
         }
         
-        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Command $cmd
         
         if ($result.ExitCode -ne 0) {
             Write-LogError "Failed to execute remote checksum command"
@@ -426,7 +398,6 @@ function Remove-RemoteFile {
         [string]$User,
         [int]$PortNumber,
         [string]$KeyFilePath,
-        [string]$Pass,
         [string]$RemotePath
     )
     
@@ -434,7 +405,7 @@ function Remove-RemoteFile {
         Write-LogInfo "Removing remote file: $RemotePath"
         
         $cmd = "rm -f '$RemotePath'"
-        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Pass $Pass -Command $cmd
+        $result = Invoke-SshCommand -Hostname $Hostname -User $User -PortNumber $PortNumber -KeyFilePath $KeyFilePath -Command $cmd
         
         if ($result.ExitCode -eq 0) {
             Write-LogSuccess "Remote file removed successfully"
@@ -460,21 +431,8 @@ function Main {
             return 1
         }
         
-        # Validate authentication method
-        if (-not $Password -and -not $KeyFile) {
-            Write-LogError "Either -Password or -KeyFile must be provided"
-            return 1
-        }
-        
-        # Note: Password authentication is not supported with Windows built-in SSH
-        if ($Password) {
-            Write-LogError "Password authentication is not supported with Windows built-in OpenSSH client."
-            Write-LogError "Please use -KeyFile parameter for key-based authentication."
-            return 1
-        }
-        
         # Validate key file exists
-        if ($KeyFile -and -not (Test-Path $KeyFile)) {
+        if (-not (Test-Path $KeyFile)) {
             Write-LogError "Key file not found: $KeyFile"
             return 1
         }
@@ -498,9 +456,7 @@ function Main {
         
         # Connection info
         Write-LogInfo "Connecting to ${Host}:${Port} as $Username"
-        if ($KeyFile) {
-            Write-LogInfo "Using key file: $KeyFile"
-        }
+        Write-LogInfo "Using key file: $KeyFile"
         
         if ($Download) {
             # Download mode: remote -> local
@@ -510,20 +466,20 @@ function Main {
             
             # Verify remote file exists
             Write-LogDebug "Checking if remote file exists..."
-            if (-not (Test-RemoteFileExists -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile)) {
+            if (-not (Test-RemoteFileExists -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile)) {
                 Write-LogError "Remote file not found: $remoteFile"
                 return 1
             }
             
             # Get remote file size
-            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile
             if ($remoteSize) {
                 Write-LogInfo "Remote file size: $remoteSize bytes"
             }
             
             # Step 2: Download the file
             Write-LogInfo "Downloading $remoteFile to $localFile"
-            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -LocalPath $localFile -RemotePath $remoteFile -IsDownload $true)) {
+            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -LocalPath $localFile -RemotePath $remoteFile -IsDownload $true)) {
                 Write-LogError "File download failed"
                 return 1
             }
@@ -534,7 +490,7 @@ function Main {
             
             # Get file sizes
             $localSize = (Get-Item $localFile).Length
-            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile
             
             Write-LogInfo "Local file size: $localSize bytes"
             Write-LogInfo "Remote file size: $remoteSize bytes"
@@ -556,7 +512,7 @@ function Main {
                     return 1
                 }
                 
-                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
+                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile -Algorithm $Checksum
                 if (-not $remoteChecksum) {
                     Write-LogError "Failed to calculate remote checksum"
                     return 1
@@ -577,7 +533,7 @@ function Main {
             
             # Step 4: Remove remote source file (unless -NoRemove flag is set)
             if (-not $NoRemove) {
-                if (-not (Remove-RemoteFile -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile)) {
+                if (-not (Remove-RemoteFile -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile)) {
                     Write-LogError "Failed to remove remote source file"
                     return 1
                 }
@@ -596,7 +552,7 @@ function Main {
             
             # Step 2: Transfer the file
             Write-LogInfo "Transferring $localFile to $remoteFile"
-            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -LocalPath $localFile -RemotePath $remoteFile -IsDownload $false)) {
+            if (-not (Invoke-SftpTransfer -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -LocalPath $localFile -RemotePath $remoteFile -IsDownload $false)) {
                 Write-LogError "File transfer failed"
                 return 1
             }
@@ -606,7 +562,7 @@ function Main {
             Write-LogInfo "Verifying file transfer..."
             
             # Get remote file size
-            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile
+            $remoteSize = Get-RemoteFileSize -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile
             
             Write-LogInfo "Local file size: $localSize bytes"
             Write-LogInfo "Remote file size: $remoteSize bytes"
@@ -628,7 +584,7 @@ function Main {
                     return 1
                 }
                 
-                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -Pass $Password -RemotePath $remoteFile -Algorithm $Checksum
+                $remoteChecksum = Get-RemoteChecksum -Hostname $Host -User $Username -PortNumber $Port -KeyFilePath $KeyFile -RemotePath $remoteFile -Algorithm $Checksum
                 if (-not $remoteChecksum) {
                     Write-LogError "Failed to calculate remote checksum"
                     return 1
